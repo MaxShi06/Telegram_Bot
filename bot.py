@@ -25,17 +25,16 @@ def load_data():
     }
 
 def save_data():
-    """Збереження даних із захистом від помилок доступу"""
     data = {"event": EVENT, "users": users}
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except PermissionError:
-        print(f"⚠️ Помилка доступу! Закрийте файл {DB_FILE}, якщо він відкритий.")
+        print(f"⚠️ Файл {DB_FILE} зайнятий іншою програмою!")
     except Exception as e:
-        print(f"❌ Не вдалося зберегти дані: {e}")
+        print(f"❌ Помилка збереження: {e}")
 
-# Ініціалізація даних
+# Завантаження початкових даних
 data = load_data()
 EVENT = data.get("event", {"city": "Черкаси", "date": "20.07.2026", "place": "Скейт-парк"})
 users = data.get("users", {})
@@ -47,7 +46,6 @@ def send_message(chat_id, text, reply_markup=None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
-    
     headers = {"Content-Type": "application/json"}
     try:
         conn.request("POST", f"{BASE_URL}/sendMessage", body=json.dumps(payload), headers=headers)
@@ -60,8 +58,7 @@ def send_message(chat_id, text, reply_markup=None):
 def get_updates(offset=None):
     conn = http.client.HTTPSConnection(HOST)
     url = f"{BASE_URL}/getUpdates?timeout=30"
-    if offset:
-        url += f"&offset={offset}"
+    if offset: url += f"&offset={offset}"
     try:
         conn.request("GET", url)
         resp = conn.getresponse()
@@ -71,12 +68,9 @@ def get_updates(offset=None):
     finally:
         conn.close()
 
-# --- УНІВЕРСАЛЬНА РОЗСИЛКА ---
 def broadcast_update(message_text):
-    """Надсилає оновлення всім учасникам"""
-    print(f"Запуск розсилки: {message_text}")
+    """Розсилка всім учасникам"""
     for user_id in users.keys():
-        # Адміну не дублюємо, якщо він сам це ініціював
         send_message(int(user_id), message_text)
 
 # --- КЛАВІАТУРИ ---
@@ -93,8 +87,8 @@ def date_selection_keyboard():
     keyboard = {"inline_keyboard": []}
     today = datetime.date.today()
     for i in range(1, 8): 
-        date_str = (today + datetime.timedelta(days=i)).strftime("%d.%m.%Y")
-        keyboard["inline_keyboard"].append([{"text": f"📅 {date_str}", "callback_data": f"set_date:{date_str}"}])
+        d = (today + datetime.timedelta(days=i)).strftime("%d.%m.%Y")
+        keyboard["inline_keyboard"].append([{"text": f"📅 {d}", "callback_data": f"set_date:{d}"}])
     keyboard["inline_keyboard"].append([{"text": "⬅️ Назад", "callback_data": "back_to_admin"}])
     return keyboard
 
@@ -106,7 +100,7 @@ def registration_buttons(user_id):
         ]
     }
 
-# --- ГОЛОВНИЙ ЦИКЛ ---
+# --- ЛОГІКА БОТА ---
 print("Бот запущений 🛹")
 last_update_id = None
 
@@ -116,7 +110,7 @@ while True:
     for update in updates:
         last_update_id = update["update_id"]
 
-        # ---------- CALLBACKS ----------
+        # ОБРОБКА КНОПОК
         callback = update.get("callback_query")
         if callback:
             cb_data = callback["data"]
@@ -125,51 +119,56 @@ while True:
             if from_id == ADMIN_ID:
                 if cb_data == "edit_date":
                     send_message(ADMIN_ID, "Оберіть нову дату:", reply_markup=date_selection_keyboard())
-                
                 elif cb_data.startswith("set_date:"):
                     new_date = cb_data.split(":")[1]
                     EVENT["date"] = new_date
                     save_data()
                     send_message(ADMIN_ID, f"✅ Дату змінено на {new_date}.")
                     broadcast_update(f"<b>⚠️ Увага! Нова дата контесту: {new_date}</b>")
-                
                 elif cb_data == "edit_city":
                     send_message(ADMIN_ID, "Напишіть назву нового міста:")
                     states[ADMIN_ID] = "admin_expect_city"
-                
                 elif cb_data == "edit_place":
                     send_message(ADMIN_ID, "Напишіть нову локацію:")
                     states[ADMIN_ID] = "admin_expect_place"
-
                 elif cb_data == "back_to_admin":
                     send_message(ADMIN_ID, "Меню керування:", reply_markup=admin_main_menu())
-
                 elif ":" in cb_data:
                     action, target_id = cb_data.split(":")
                     if target_id in users:
                         if action == "accept":
                             users[target_id]["status"] = "Прийнятий"
-                            send_message(int(target_id), "✅ Твоя заявка прийнята!")
+                            send_message(int(target_id), "✅ Твоя заявка прийнята! Побачимось!")
                         elif action == "reject":
                             users[target_id]["status"] = "Відхилений"
                             send_message(int(target_id), "❌ Твою заявку відхилено.")
                         save_data()
-                        send_message(ADMIN_ID, "Статус оновлено.")
+                        send_message(ADMIN_ID, f"Статус для користувача оновлено.")
             continue
 
-        # ---------- MESSAGES ----------
+        # ОБРОБКА ПОВІДОМЛЕНЬ
         message = update.get("message")
-        if not message or "text" not in message:
-            continue
+        if not message or "text" not in message: continue
 
         chat_id = message["chat"]["id"]
         text = message["text"]
 
-        if chat_id == ADMIN_ID and text == "/admin":
-            send_message(ADMIN_ID, "🛠 Панель керування:", reply_markup=admin_main_menu())
-            continue
+        # Команди адміна
+        if chat_id == ADMIN_ID:
+            if text == "/admin":
+                send_message(ADMIN_ID, "🛠 Панель керування:", reply_markup=admin_main_menu())
+                continue
+            elif text == "/list":
+                if not users:
+                    send_message(ADMIN_ID, "Список порожній.")
+                else:
+                    msg = "📋 <b>Список учасників:</b>\n\n"
+                    for uid, u in users.items():
+                        msg += f"• {u['name']} ({u.get('level', '-')}) - <b>{u['status']}</b>\n"
+                    send_message(ADMIN_ID, msg)
+                continue
 
-        # Обробка текстових станів адміна (місто/локація)
+        # Стани адміна (введення тексту)
         if chat_id == ADMIN_ID and chat_id in states:
             state = states[chat_id]
             if state == "admin_expect_city":
@@ -208,8 +207,14 @@ while True:
             elif state == "expect_tricks":
                 users[str(chat_id)]["tricks"] = text
                 save_data()
+                
+                # Повний звіт адміну
+                u = users[str(chat_id)]
+                info = (f"🆕 <b>Нова заявка!</b>\n\n👤 Ім'я: {u['name']}\n"
+                        f"📊 Рівень: {u['level']}\n🚲 Трюки: {u['tricks']}")
+                send_message(ADMIN_ID, info, reply_markup=registration_buttons(chat_id))
+                
                 send_message(chat_id, "✅ Реєстрація завершена! Очікуй підтвердження.")
                 states.pop(chat_id)
-                send_message(ADMIN_ID, f"🆕 Нова заявка від {users[str(chat_id)]['name']}!", reply_markup=registration_buttons(chat_id))
 
     time.sleep(1)
