@@ -11,6 +11,9 @@ HOST = "api.telegram.org"
 BASE_URL = f"/bot{TOKEN}"
 DB_FILE = "database.json"
 
+# Сховище для відстеження відправки щоденних сповіщень
+last_reminder_date = ""
+
 # --- РОБОТА З ДАНИМИ ---
 def load_data():
     if os.path.exists(DB_FILE):
@@ -20,7 +23,7 @@ def load_data():
         except Exception as e:
             print(f"Помилка читання бази: {e}")
     return {
-        "event": {"city": "Черкаси", "date": "20.07.2026", "place": "Скейт-парк"},
+        "event": {"city": "Черкаси", "date": "20.07.2026", "time": "12:00", "place": "Скейт-парк"},
         "users": {}
     }
 
@@ -36,7 +39,11 @@ def save_data():
 
 # Завантаження початкових даних
 data = load_data()
-EVENT = data.get("event", {"city": "Черкаси", "date": "20.07.2026", "place": "Скейт-парк"})
+EVENT = data.get("event", {"city": "Черкаси", "date": "20.07.2026", "time": "12:00", "place": "Скейт-парк"})
+# Перевірка на випадок, якщо в старій базі не було поля time
+if "time" not in EVENT:
+    EVENT["time"] = "12:00"
+
 users = data.get("users", {})
 states = {}
 
@@ -77,7 +84,8 @@ def broadcast_update(message_text):
 def admin_main_menu():
     return {
         "inline_keyboard": [
-            [{"text": "📅 Змінити Дату", "callback_data": "edit_date"}],
+            [{"text": "📅 Змінити Дату", "callback_data": "edit_date"},
+             {"text": "⏰ Змінити Час", "callback_data": "edit_time"}],
             [{"text": "🏙 Змінити Місто", "callback_data": "edit_city"}, 
              {"text": "📍 Змінити Місце", "callback_data": "edit_place"}]
         ]
@@ -100,11 +108,54 @@ def registration_buttons(user_id):
         ]
     }
 
+# --- АВТОМАТИЧНІ НАГАДУВАННЯ ---
+def check_and_send_reminders():
+    global last_reminder_date
+    now = datetime.datetime.now()
+    today_str = now.strftime("%d.%m.%Y")
+    
+    # Спрацьовує раз на день
+    if last_reminder_date != today_str:
+        current_time_str = now.strftime("%H:%M")
+        
+        # 1. Автонадсилання списку учасників адміну о 09:00
+        if current_time_str >= "09:00" and current_time_str <= "09:05":
+            if not users:
+                send_message(ADMIN_ID, "📋 Щоденний звіт: Список учасників поки порожній.")
+            else:
+                msg = "📋 <b>Щоденний звіт. Список учасників:</b>\n\n"
+                for uid, u in users.items():
+                    msg += f"• {u['name']} ({u.get('level', '-')}) - <b>{u['status']}</b>\n"
+                send_message(ADMIN_ID, msg)
+            last_reminder_date = today_str
+            
+        # 2. Автонагадування користувачам про контест о 10:00 (якщо до івенту менше 3 днів)
+        elif current_time_str >= "10:00" and current_time_str <= "10:05":
+            try:
+                event_date = datetime.datetime.strptime(EVENT["date"], "%d.%m.%Y").date()
+                days_left = (event_date - now.date()).days
+                
+                if 0 <= days_left <= 3:
+                    reminder_text = (f"🔔 <b>Нагадування про контест!</b>\n\n"
+                                     f"🛹 До BMX CONTEST залишилося днів: {days_left}\n"
+                                     f"🏙 Місто: {EVENT['city']}\n"
+                                     f"📅 Дата: {EVENT['date']}\n"
+                                     f"⏰ Час: {EVENT['time']}\n"
+                                     f"📍 Місце: {EVENT['place']}\n\n"
+                                     f"Готуй байк! 🔥")
+                    broadcast_update(reminder_text)
+            except Exception as e:
+                print(f"Помилка розрахунку дати для нагадування: {e}")
+            last_reminder_date = today_str
+
 # --- ЛОГІКА БОТА ---
 print("Бот запущений 🛹")
 last_update_id = None
 
 while True:
+    # Перевірка на необхідність надсилання автонагадувань
+    check_and_send_reminders()
+
     updates = get_updates(last_update_id + 1 if last_update_id else None)
 
     for update in updates:
@@ -125,6 +176,9 @@ while True:
                     save_data()
                     send_message(ADMIN_ID, f"✅ Дату змінено на {new_date}.")
                     broadcast_update(f"<b>⚠️ Увага! Нова дата контесту: {new_date}</b>")
+                elif cb_data == "edit_time":
+                    send_message(ADMIN_ID, "Напишіть новий час контесту (наприклад, 15:00):")
+                    states[ADMIN_ID] = "admin_expect_time"
                 elif cb_data == "edit_city":
                     send_message(ADMIN_ID, "Напишіть назву нового міста:")
                     states[ADMIN_ID] = "admin_expect_city"
@@ -171,7 +225,13 @@ while True:
         # Стани адміна (введення тексту)
         if chat_id == ADMIN_ID and chat_id in states:
             state = states[chat_id]
-            if state == "admin_expect_city":
+            if state == "admin_expect_time":
+                EVENT["time"] = text
+                save_data()
+                send_message(ADMIN_ID, f"✅ Час змінено на: {text}", reply_markup=admin_main_menu())
+                broadcast_update(f"<b>⏰ Зміна часу контесту!</b> Старт о: {text}")
+                states.pop(chat_id)
+            elif state == "admin_expect_city":
                 EVENT["city"] = text
                 save_data()
                 send_message(ADMIN_ID, f"✅ Місто змінено на: {text}", reply_markup=admin_main_menu())
@@ -188,7 +248,7 @@ while True:
         # Реєстрація користувача
         if text == "/start":
             send_message(chat_id, 
-                f"🛹 <b>BMX CONTEST</b>\n\n🏙 Місто: {EVENT['city']}\n📅 Дата: {EVENT['date']}\n📍 Місце: {EVENT['place']}\n\n"
+                f"🛹 <b>BMX CONTEST</b>\n\n🏙 Місто: {EVENT['city']}\n📅 Дата: {EVENT['date']}\n⏰ Час: {EVENT['time']}\n📍 Місце: {EVENT['place']}\n\n"
                 f"Введіть ваше ім'я для реєстрації:"
             )
             states[chat_id] = "expect_name"
