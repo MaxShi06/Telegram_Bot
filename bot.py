@@ -5,7 +5,7 @@ import datetime
 import os
 
 # --- КОНФІГУРАЦІЯ ---
-TOKEN = "8222253495:AAEcKWLqxzN8O2KgkaErHEszzjKeRR039og"
+TOKEN = "8222253495:AAFaFUA2ptzYnMGosC4r1wux8sbN3eo7Ovc"
 ADMIN_ID = 942015461
 HOST = "api.telegram.org"
 BASE_URL = f"/bot{TOKEN}"
